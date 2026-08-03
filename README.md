@@ -8,6 +8,7 @@ A Tampermonkey userscript that highlights games on Humble Bundle when a matching
 - Keeps the Steam Web API key and SteamID64 in Tampermonkey storage instead of the source file.
 - Detects games added dynamically by Humble Bundle pages.
 - Preserves letters, numbers, and international characters when matching titles.
+- Distinguishes exact title matches from cases where only the base game can be verified.
 - Shows a visible error when configuration or the Steam response is invalid.
 
 ## Install
@@ -32,9 +33,28 @@ The script sends the configured API key and SteamID64 directly to `api.steampowe
 
 Tampermonkey storage is convenient, but it is not a dedicated secrets vault. Do not share an exported userscript configuration containing private values.
 
-## Matching limitations
+## Edition matching
 
-The script currently compares normalized game titles. Different editions, renamed games, bundles with extra suffixes, or localized titles may not match perfectly. Exact Steam App ID matching would be preferable where Humble exposes an App ID or Steam store link.
+Steam's owned-games response exposes owned game apps, but it does not reliably expose the exact store package or commercial edition that granted them. The script therefore uses conservative title-based rules:
+
+- **Owned on Steam** means the normalized Humble title exactly matches a title returned by Steam.
+- **Base game owned — edition extras not verified** means Humble lists a recognized commercial edition suffix, such as Deluxe, Ultimate, Gold, GOTY, Complete, or Standard Edition, and the corresponding base title is owned.
+- No ownership label is shown when neither test succeeds.
+
+For example, if Steam reports `Borderlands 3`:
+
+- `Borderlands 3 Standard Edition` is shown as base-game ownership with unverified extras.
+- `Borderlands 3 Super Deluxe Edition` is also shown as base-game ownership with unverified extras; the script does not claim that its Season Pass or DLC is owned.
+
+The fallback deliberately does not strip markers such as Remastered, Definitive Edition, Anniversary Edition, Enhanced Edition, Director's Cut, Redux, or Reloaded. Those names may identify a materially different Steam app rather than a package around the same base game.
+
+These rules reduce false "fully owned" results but cannot prove DLC or package ownership. Exact Steam App ID and package-component data would be needed for that.
+
+## SteamDB
+
+SteamDB is useful for manually researching app, package, bundle, and DLC relationships. However, SteamDB states that it does not provide a public API and does not permit automated scraping. The userscript therefore does not query SteamDB.
+
+A future maintainable approach could use a small, reviewed data file containing known edition mappings sourced from official Steam store/package information. Such data would still require updates when publishers change their editions.
 
 ## Updating
 

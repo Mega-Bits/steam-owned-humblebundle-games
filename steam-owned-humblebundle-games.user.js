@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Steam Owned HumbleBundle Games
 // @namespace    https://github.com/Mega-Bits
-// @version      0.2.0
-// @description  Highlights Humble Bundle games that are already in your Steam library
+// @version      0.3.0
+// @description  Highlights Humble Bundle games and distinguishes exact editions from base-game ownership
 // @author       Kevin Batdorf (original), Mega-Bits (maintenance)
 // @match        https://www.humblebundle.com/*
 // @icon         https://www.google.com/s2/favicons?domain=humblebundle.com
@@ -30,20 +30,64 @@
     };
 
     const GAME_SELECTOR = '.content-choice-title, .tier-item-view .item-title';
-    const OWNED_LABEL_CLASS = 'steam-owned-label';
-    const OWNED_CARD_CLASS = 'steam-owned-game';
+    const OWNERSHIP_LABEL_CLASS = 'steam-ownership-label';
+    const EXACT_CARD_CLASS = 'steam-owned-exact';
+    const BASE_CARD_CLASS = 'steam-owned-base';
+
+    // These suffixes usually describe a commercial edition that includes the same base game.
+    // They are removed only for the fallback "base game owned" check.
+    const EDITION_SUFFIXES = [
+        'super deluxe edition',
+        'digital deluxe edition',
+        'premium edition',
+        'ultimate edition',
+        'complete edition',
+        'collector s edition',
+        'collectors edition',
+        'deluxe edition',
+        'gold edition',
+        'goty edition',
+        'game of the year edition',
+        'standard edition',
+        'season pass bundle',
+        'season pass',
+    ];
+
+    // These labels can represent a materially different Steam app and must not be stripped.
+    const DISTINCT_RELEASE_MARKERS = [
+        'remaster',
+        'remastered',
+        'definitive edition',
+        'anniversary edition',
+        'enhanced edition',
+        'directors cut',
+        'director s cut',
+        'redux',
+        'reloaded',
+    ];
 
     GM_addStyle(`
-        .${OWNED_CARD_CLASS} {
+        .${EXACT_CARD_CLASS} {
             box-shadow: 0 0 5px 5px #c368ff !important;
         }
 
-        .${OWNED_LABEL_CLASS} {
+        .${BASE_CARD_CLASS} {
+            box-shadow: 0 0 5px 5px #d9a441 !important;
+        }
+
+        .${OWNERSHIP_LABEL_CLASS} {
             display: block;
             margin: -0.25rem 0 1rem;
             padding-top: 0;
-            color: rgb(195 104 255);
             font-weight: 700;
+        }
+
+        .${OWNERSHIP_LABEL_CLASS}[data-status="exact"] {
+            color: rgb(195 104 255);
+        }
+
+        .${OWNERSHIP_LABEL_CLASS}[data-status="base"] {
+            color: #d9a441;
         }
 
         .steam-owned-status {
@@ -67,6 +111,71 @@
         .toLowerCase()
         .replace(/[^\p{L}\p{N}]+/gu, ' ')
         .trim();
+
+    const hasDistinctReleaseMarker = (title) => DISTINCT_RELEASE_MARKERS.some((marker) =>
+        title === marker || title.endsWith(` ${marker}`)
+    );
+
+    const parseEditionTitle = (value) => {
+        const normalizedTitle = normalizeTitle(value);
+
+        if (!normalizedTitle || hasDistinctReleaseMarker(normalizedTitle)) {
+            return {
+                normalizedTitle,
+                baseTitle: normalizedTitle,
+                edition: null,
+                allowsBaseFallback: false,
+            };
+        }
+
+        const edition = EDITION_SUFFIXES.find((suffix) =>
+            normalizedTitle === suffix || normalizedTitle.endsWith(` ${suffix}`)
+        );
+
+        if (!edition) {
+            return {
+                normalizedTitle,
+                baseTitle: normalizedTitle,
+                edition: null,
+                allowsBaseFallback: false,
+            };
+        }
+
+        const baseTitle = normalizedTitle.slice(0, -edition.length).trim();
+
+        return {
+            normalizedTitle,
+            baseTitle: baseTitle || normalizedTitle,
+            edition,
+            allowsBaseFallback: Boolean(baseTitle),
+        };
+    };
+
+    const classifyOwnership = (displayTitle, ownedTitles) => {
+        const parsed = parseEditionTitle(displayTitle);
+
+        if (ownedTitles.has(parsed.normalizedTitle)) {
+            return {
+                status: 'exact',
+                label: 'Owned on Steam',
+                parsed,
+            };
+        }
+
+        if (parsed.allowsBaseFallback && ownedTitles.has(parsed.baseTitle)) {
+            return {
+                status: 'base',
+                label: 'Base game owned — edition extras not verified',
+                parsed,
+            };
+        }
+
+        return {
+            status: 'none',
+            label: '',
+            parsed,
+        };
+    };
 
     const showStatus = (message, timeout = 8000) => {
         document.querySelector('.steam-owned-status')?.remove();
@@ -144,42 +253,45 @@
         });
     });
 
-    const removeOwnedState = (node) => {
-        if (node.nextElementSibling?.classList.contains(OWNED_LABEL_CLASS)) {
+    const getCardNodes = (node) => [
+        node.closest('.js-item-details')?.querySelector('.img-container'),
+        node.closest('.content-choice'),
+    ].filter(Boolean);
+
+    const removeOwnershipState = (node) => {
+        if (node.nextElementSibling?.classList.contains(OWNERSHIP_LABEL_CLASS)) {
             node.nextElementSibling.remove();
         }
 
-        node.closest('.js-item-details')
-            ?.querySelector('.img-container')
-            ?.classList.remove(OWNED_CARD_CLASS);
-
-        node.closest('.content-choice')?.classList.remove(OWNED_CARD_CLASS);
+        getCardNodes(node).forEach((card) => {
+            card.classList.remove(EXACT_CARD_CLASS, BASE_CARD_CLASS);
+        });
     };
 
-    const markOwned = (node) => {
+    const markOwnership = (node, result) => {
         const label = document.createElement('strong');
-        label.className = OWNED_LABEL_CLASS;
-        label.textContent = 'Owned on Steam';
+        label.className = OWNERSHIP_LABEL_CLASS;
+        label.dataset.status = result.status;
+        label.textContent = result.label;
         node.insertAdjacentElement('afterend', label);
 
-        node.closest('.js-item-details')
-            ?.querySelector('.img-container')
-            ?.classList.add(OWNED_CARD_CLASS);
-
-        node.closest('.content-choice')?.classList.add(OWNED_CARD_CLASS);
+        const cardClass = result.status === 'exact' ? EXACT_CARD_CLASS : BASE_CARD_CLASS;
+        getCardNodes(node).forEach((card) => card.classList.add(cardClass));
     };
 
     const startPageObserver = (ownedTitles) => {
         const scanPage = () => {
             document.querySelectorAll(GAME_SELECTOR).forEach((node) => {
-                const title = normalizeTitle(node.textContent);
-                if (!title || node.dataset.steamCheckedTitle === title) return;
+                const displayTitle = node.textContent ?? '';
+                const normalizedTitle = normalizeTitle(displayTitle);
+                if (!normalizedTitle || node.dataset.steamCheckedTitle === normalizedTitle) return;
 
-                removeOwnedState(node);
-                node.dataset.steamCheckedTitle = title;
+                removeOwnershipState(node);
+                node.dataset.steamCheckedTitle = normalizedTitle;
 
-                if (ownedTitles.has(title)) {
-                    markOwned(node);
+                const result = classifyOwnership(displayTitle, ownedTitles);
+                if (result.status !== 'none') {
+                    markOwnership(node, result);
                 }
             });
         };
